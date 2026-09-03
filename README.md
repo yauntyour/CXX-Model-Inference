@@ -137,14 +137,8 @@ huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir Qwen3.5-0.8B
 ### 3. 构建项目
 
 ```bash
-# 创建构建目录
-mkdir build && cd build
-
-# 配置（可指定 CUDA 架构）
-cmake .. -DCMAKE_CUDA_ARCHITECTURES=86  # RTX 3060 = 86, RTX 4090 = 89
-
-# 编译
-cmake --build . --config Release
+# MSVC
+cmake -B build -G "Visual Studio 18 2026" -A x64 -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_CUDA_HOST_COMPILER=cl -DCMAKE_CUDA_ARCHITECTURES=120
 ```
 
 ### 4. 运行
