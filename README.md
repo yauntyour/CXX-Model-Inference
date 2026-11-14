@@ -1,6 +1,6 @@
 <div align="center">
 
-# CXX-Qwen
+# CXX-Model-Inference
 
 **纯 C++17 + CUDA 实现的 Qwen3.5-0.8B 多模态推理引擎**
 
@@ -16,7 +16,7 @@
 
 ## 项目简介
 
-CXX-Qwen 是一个完全用 C++17 和 CUDA 编写的 Qwen3.5-0.8B 推理引擎，支持文本生成和视觉理解。它展示了如何在不依赖任何深度学习框架的情况下，从零实现一个完整的多模态大语言模型推理系统。
+CXX-Model-Inference 是一个完全用 C++17 和 CUDA 编写的 Qwen3.5-0.8B 推理引擎，支持文本生成和视觉理解。它展示了如何在不依赖任何深度学习框架的情况下，从零实现一个完整的多模态大语言模型推理系统。
 
 ### 核心特性
 
@@ -35,7 +35,7 @@ CXX-Qwen 是一个完全用 C++17 和 CUDA 编写的 Qwen3.5-0.8B 推理引擎�
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      CXX-Qwen 架构                          │
+│                  CXX-Model-Inference 架构                   │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
 │  │  Tokenizer│  │  Vision  │  │  Qwen3.5 │  │   CUDA   │    │
@@ -79,7 +79,7 @@ CXX-Qwen 是一个完全用 C++17 和 CUDA 编写的 Qwen3.5-0.8B 推理引擎�
 ## 目录结构
 
 ```
-CXX-Qwen/
+CXX-Model-Inference/
 ├── CMakeLists.txt              # 顶层构建配置
 ├── src/                        # 主程序源码
 │   ├── main.cpp                # Qwen3.5 CLI 聊天界面入口
@@ -99,8 +99,10 @@ CXX-Qwen/
 │   │   └── CUDA/               # CUDA 后端
 │   ├── example/                # 示例程序
 │   └── benchmark/              # 性能基准测试
+├── tools/                      # PyTorch 参考 / 数值验证 / W8A16 实验脚本
 ├── tokenizer/                  # Tokenizer 配置文件
-└── Qwen3.5-0.8B/              # 模型权重（需单独下载）
+├── repos/                      # 第三方参考仓库（如 AstrAI，可选）
+└── Qwen3.5-0.8B/             # 模型权重（需单独下载）
 ```
 
 ---
@@ -118,8 +120,8 @@ CXX-Qwen/
 ### 1. 克隆仓库
 
 ```bash
-git clone --recursive https://github.com/your-username/CXX-Qwen.git
-cd CXX-Qwen
+git clone --recursive https://github.com/yauntyour/CXX-Model-Inference.git
+cd CXX-Model-Inference
 ```
 
 ### 2. 下载模型权重
@@ -344,7 +346,7 @@ attention 和每 token 的 launch 开销。
 
 同一份 2B 权重、同一台 RTX 5060 Ti、batch=1。官方框架使用
 `repos/AstrAI/scripts/benchmark/inference.py`，CUDA 扩展按 `sm_120a` 编译；
-CXX-Qwen 使用 `--bench`。
+CXX-Model-Inference 使用 `--bench`。
 
 | 指标 | AstrAI 官方 torch | AstrAI 官方 cuda | CXX BF16 | CXX W8A16 |
 |---|---:|---:|---:|---:|
@@ -447,7 +449,7 @@ void gated_delta_rule_forward(
 
 ## TensorN 张量库
 
-CXX-Qwen 内置了 [TensorN](TensorN/) 张量计算库，这是一个功能完整的 C++17 张量库：
+CXX-Model-Inference 内置了 [TensorN](TensorN/) 张量计算库，这是一个功能完整的 C++17 张量库：
 
 ### 核心功能
 

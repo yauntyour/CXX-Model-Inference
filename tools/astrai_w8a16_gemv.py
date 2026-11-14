@@ -14,7 +14,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.cpp_extension import load_inline
 
-REPO = Path(r"D:\Developments\CXX\CXX-Qwen\repos\AstrAI")
+ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT / "repos" / "AstrAI"
 MODEL = Path(r"D:\models\AstrAI-V1-2B-instruct")
 sys.path.insert(0, str(REPO))
 

@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-project(CXXQwen
+project(CXXModelInference
     VERSION 0.1.0
-    DESCRIPTION "Qwen3.5-0.8B inference on TensorN (CUDA)"
+    DESCRIPTION "C++17/CUDA model inference on TensorN"
     LANGUAGES CXX CUDA
 )
 

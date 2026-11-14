@@ -7,14 +7,15 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-REPO = Path(r"D:\Developments\CXX\CXX-Qwen\repos\AstrAI")
+ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT / "repos" / "AstrAI"
 MODEL = Path(r"D:\models\AstrAI-V1-2B-instruct")
 sys.path.insert(0, str(REPO))
-sys.path.insert(0, r"D:\Developments\CXX\CXX-Qwen\tools")
+sys.path.insert(0, str(ROOT / "tools"))
 
 _spec = importlib.util.spec_from_file_location(
     "astrai_w8a16_mod",
-    r"D:\Developments\CXX\CXX-Qwen\tools\astrai_w8a16_gemv.py",
+    ROOT / "tools" / "astrai_w8a16_gemv.py",
 )
 extmod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(extmod)
