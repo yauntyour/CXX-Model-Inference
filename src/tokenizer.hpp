@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <cctype>
+#include <cstring>
 #include <nlohmann/json.hpp>
 #include "unicode.hpp"
 
@@ -24,6 +25,7 @@ class BPETokenizer {
     std::unordered_map<std::string, int> merge_ranks;
     int bos_id, eos_id;
     std::vector<std::string> specials;
+    bool bytelevel_ = false;   // tokenizer.json pre_tokenizer == ByteLevel (GPT-2 正则)
 
     struct PairHash {
         size_t operator()(const std::pair<std::string,std::string>& p) const {
@@ -176,6 +178,149 @@ class BPETokenizer {
     // - 单词可附加一个前导空格 ("hello world" -> "hello" + " world")
     // - 单个标点可附加后续字母串 ("!你好" / ".next" 各自为一块)
     // - 单个数字自成一块 (\p{N})
+    // ByteLevel / GPT-2 预分词正则:
+    //   's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+    // 与 Qwen2 正则的关键差别: 数字按连续串分组; 词前只允许一个空格.
+    std::vector<std::string> pretokenize_bytelevel(const std::string& text) const {
+        std::vector<std::string> out;
+        const size_t n = text.size();
+        size_t i = 0;
+
+        auto next_len = [&](size_t p) -> int {
+            if (p >= n) return 0;
+            int len = utf8_char_len((unsigned char)text[p]);
+            if (p + len > n) len = (int)(n - p);
+            return len;
+        };
+        auto at = [&](size_t p, size_t len) { return text.substr(p, len); };
+        auto is_letter_at = [&](size_t p) -> bool {
+            int len = next_len(p);
+            return len > 0 && is_letter_char(at(p, len));
+        };
+        auto is_digit_at = [&](size_t p) -> bool {
+            int len = next_len(p);
+            return len > 0 && is_digit_char(at(p, len));
+        };
+        // 正则中的 \s 包含换行/制表符; 不能用 is_space_char (它排除了 \r\n)
+        auto is_ws_at = [&](size_t p) -> bool {
+            if (p >= n) return false;
+            size_t pos = p;
+            int cp = utf8_decode(text, pos);
+            return cp >= 0 && unicode_tbl::is_whitespace(cp);
+        };
+        auto is_other_at = [&](size_t p) -> bool {
+            int len = next_len(p);
+            if (len == 0) return false;
+            std::string c = at(p, len);
+            return !is_ws_at(p) && !is_letter_char(c) && !is_digit_char(c);
+        };
+        auto consume = [&](size_t p, auto pred) -> size_t {
+            while (p < n && pred(p)) p += next_len(p);
+            return p;
+        };
+
+        while (i < n)
+        {
+            int len = next_len(i);
+            std::string ch = at(i, len);
+
+            // 1) 缩略形式 (与 GPT-2 正则一致: 小写, 大小写敏感)
+            if (ch == "'")
+            {
+                static const char* tails[] = {"'re", "'ve", "'ll", "'s", "'t", "'m", "'d"};
+                bool matched = false;
+                for (const char* t : tails)
+                {
+                    size_t tl = std::strlen(t);
+                    if (i + tl <= n && text.compare(i, tl, t) == 0)
+                    {
+                        out.push_back(text.substr(i, tl));
+                        i += tl;
+                        matched = true;
+                        break;
+                    }
+                }
+                if (matched) continue;
+            }
+
+            // 2) " ?\p{L}+" / " ?\p{N}+" / " ?[^\s\p{L}\p{N}]+"
+            //    这里的 ? 是字面空格 (不是 \s), 因此换行/制表符不会附加到单词
+            if (ch == " ")
+            {
+                size_t j = i + len;
+                if (j < n && is_letter_at(j))
+                {
+                    size_t k = consume(j, [&](size_t p) { return is_letter_at(p); });
+                    out.push_back(text.substr(i, k - i));
+                    i = k;
+                    continue;
+                }
+                if (j < n && is_digit_at(j))
+                {
+                    size_t k = consume(j, [&](size_t p) { return is_digit_at(p); });
+                    out.push_back(text.substr(i, k - i));
+                    i = k;
+                    continue;
+                }
+                if (j < n && is_other_at(j))
+                {
+                    size_t k = consume(j, [&](size_t p) { return is_other_at(p); });
+                    out.push_back(text.substr(i, k - i));
+                    i = k;
+                    continue;
+                }
+            }
+
+            if (is_letter_char(ch))
+            {
+                size_t k = consume(i, [&](size_t p) { return is_letter_at(p); });
+                out.push_back(text.substr(i, k - i));
+                i = k;
+                continue;
+            }
+            if (is_digit_char(ch))
+            {
+                size_t k = consume(i, [&](size_t p) { return is_digit_at(p); });
+                out.push_back(text.substr(i, k - i));
+                i = k;
+                continue;
+            }
+            if (is_other_at(i))
+            {
+                size_t k = consume(i, [&](size_t p) { return is_other_at(p); });
+                out.push_back(text.substr(i, k - i));
+                i = k;
+                continue;
+            }
+
+            // 3) 空白: \s+(?!\S)|\s+
+            //    非末尾的空白串先取前 L-1 个字符; 最后一个空白字符留给下一轮,
+            //    从而与 GPT-2 正则的回溯行为完全一致
+            //    (例: "  hello" -> " " + " hello"; "\n\nnew" -> "\n" + "\n" + "new")
+            size_t run_end = consume(i, [&](size_t p) { return is_ws_at(p); });
+            if (run_end == i)   // 非法 UTF-8 兜底, 避免死循环
+            {
+                out.push_back(ch);
+                i += len;
+                continue;
+            }
+            size_t last = run_end;
+            while (last > i && (((unsigned char)text[last - 1] & 0xC0) == 0x80)) last--;
+            size_t last_start = last > i ? last - 1 : i;
+            if (run_end >= n || last_start <= i)
+            {
+                out.push_back(text.substr(i, run_end - i));
+                i = run_end;
+            }
+            else
+            {
+                out.push_back(text.substr(i, last_start - i));
+                i = last_start;
+            }
+        }
+        return out;
+    }
+
     std::vector<std::string> pretokenize(const std::string& text) const {
         std::vector<std::string> out;
         size_t n = text.size();
@@ -330,7 +475,7 @@ class BPETokenizer {
             size_t next = text.find('<', i + 1);
             if (next == std::string::npos) next = n;
             std::string seg = text.substr(i, next - i);
-            auto words = pretokenize(seg);
+            auto words = bytelevel_ ? pretokenize_bytelevel(seg) : pretokenize(seg);
             for (auto& w : words) {
                 auto syms = bpe_encode_word(w);
                 for (auto& s : syms) {
@@ -352,6 +497,10 @@ public:
 
         nlohmann::json j;
         f >> j;
+
+        // AstrAI / GPT-2 风格使用 ByteLevel 预分词; Qwen 使用自带正则
+        if (j.contains("pre_tokenizer") && j["pre_tokenizer"].is_object())
+            bytelevel_ = j["pre_tokenizer"].value("type", "") == "ByteLevel";
 
         auto& model = j["model"];
         auto& v = model["vocab"];
@@ -393,8 +542,10 @@ public:
         }
 
         auto bos_it = vocab.find("<|im_start|>");
+        if (bos_it == vocab.end()) bos_it = vocab.find("<｜begin▁of▁sentence｜>");
         if (bos_it != vocab.end()) bos_id = bos_it->second;
         auto eos_it = vocab.find("<|im_end|>");
+        if (eos_it == vocab.end()) eos_it = vocab.find("<｜im▁end｜>");
         if (eos_it != vocab.end()) eos_id = eos_it->second;
 
         // 收集特殊 token (形如 <...> 的 vocab 项)

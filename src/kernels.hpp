@@ -37,6 +37,8 @@ namespace qk
     // ---------- 归一化 (x: [n, d] 行主序) ----------
     // y = rmsnorm(x) * (1 + w)
     void rms_norm_1pw(const bf16* x, const bf16* w, bf16* y, int n, int d, float eps, cudaStream_t s = 0);
+    // y = rmsnorm(x) * w  (标准 Llama RMSNorm)
+    void rms_norm(const bf16* x, const bf16* w, bf16* y, int n, int d, float eps, cudaStream_t s = 0);
     // y = rmsnorm(x) * w * silu(gate)
     void rms_norm_gated(const bf16* x, const bf16* w, const bf16* gate, bf16* y,
                         int n, int d, float eps, cudaStream_t s = 0);
@@ -58,6 +60,13 @@ namespace qk
     // inv_freq: [n_freq], section: [3] (T/H/W 长度), pos_t/h/w: [n]
     void rope_text(const bf16* x, bf16* y, const int* pos_t, const int* pos_h, const int* pos_w,
                    const float* inv_freq, const int* section, int n, int H, int D, int rot_dim,
+                   cudaStream_t s = 0);
+    // 标准 rope: 对每头前 rot_dim 维旋转。
+    // interleaved=0: Llama/NeoX 半维配对 (j, j+rot/2)
+    // interleaved=1: GPT-J 交错配对 (2j, 2j+1)
+    // x/y: [n, H*D], pos: [n], inv_freq: [rot_dim/2]
+    void rope_neox(const bf16* x, bf16* y, const int* pos, const float* inv_freq,
+                   int n, int H, int D, int rot_dim, int interleaved = 0,
                    cudaStream_t s = 0);
     // 视觉 rope: x: [n, x_stride] 行主序交错 (每 token [q|k|v], 每段 H*D), 全维旋转;
     // y: [n, y_stride] 输出布局 (通常 H*D); pos: [n, 2] (h, w), inv_freq: [n_freq]

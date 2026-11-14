@@ -3,6 +3,7 @@
 // ============================================================
 
 #include "qwen_model.hpp"
+#include "fast_ops.hpp"
 
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -438,9 +439,11 @@ int QwenModel::forward(const std::vector<int>& ids,
     if (dumpf) fclose(dumpf);
 
     // ---- 最终归一化 + lm head ----
-    qk::rms_norm_1pw(bp(b_x), bp(final_norm), bp(b_h), S, H, cfg.rms_norm_eps);
-    qk::lm_head(bp(b_h) + (size_t)(S - 1) * H, bp(embed), bp(b_logits),
-                cfg.vocab_size, H);
+    // 只归一化最后一行 (输出头只消费最后一个 token)
+    qk::rms_norm_1pw(bp(b_x) + (size_t)(S - 1) * H, bp(final_norm), bp(b_h),
+                     1, H, cfg.rms_norm_eps);
+    // 快路径: 原始 [V, H] 布局的合并访存 GEMV (Qwen 的 embed 与 lm_head 绑定)
+    fo::gemv_bf16(bp(b_h), bp(embed), bp(b_logits), cfg.vocab_size, H);
     int tok = qk::argmax(bp(b_logits), cfg.vocab_size);
     chk_err("lm_head");
 
@@ -577,8 +580,12 @@ void QwenModel::run_full(LayerW& L, int li, int S, int kv_base)
     cudaMemcpyAsync(bp(st.v) + (size_t)kv_base * row_elems, bp(b_kv2),
                     (size_t)S * row_elems * sizeof(qk::bf16), cudaMemcpyDeviceToDevice);
 
-    qk::attn_forward(bp(b_q), bp(st.k), bp(st.v), bp(b_attn), S, kv_base + S,
-                     Hq, Hkv, D, kv_base, true, 1.0f / sqrtf((float)D));
+    if (S == 1 && fo::decode_attn_supported(D))
+        fo::decode_attn(bp(b_q), bp(st.k), bp(st.v), bp(b_attn), kv_base + 1,
+                        Hq, Hkv, D, 1.0f / sqrtf((float)D));
+    else
+        qk::attn_forward(bp(b_q), bp(st.k), bp(st.v), bp(b_attn), S, kv_base + S,
+                         Hq, Hkv, D, kv_base, true, 1.0f / sqrtf((float)D));
 
     qk::sigmoid_mul(bp(b_attn), bp(b_gate), bp(b_attn), S * Hq * D);
     cuda::matmul(b_attn, fa.o_t, b_out);

@@ -32,6 +32,7 @@ add_subdirectory(TensorN)
 add_executable(qwen35_chat
     src/main.cpp
     src/kernels.cu
+    src/fast_ops.cu
     src/qwen_model.cpp
     src/vision.cpp
     src/image.cpp
@@ -40,4 +41,17 @@ add_executable(qwen35_chat
 target_link_libraries(qwen35_chat PRIVATE TensorN CUDA::cudart CUDA::cublas)
 target_include_directories(qwen35_chat PRIVATE src)
 
-source_group("src" FILES src/main.cpp src/kernels.cu src/qwen_model.cpp src/vision.cpp src/image.cpp)
+source_group("src" FILES src/main.cpp src/kernels.cu src/fast_ops.cu src/qwen_model.cpp src/vision.cpp src/image.cpp)
+
+# ---- AstrAI / 通用 Dense Transformer 文本模型 ----
+add_executable(astrai_chat
+    src/astrai_main.cpp
+    src/kernels.cu
+    src/fast_ops.cu
+    src/dense_model.cpp
+)
+
+target_link_libraries(astrai_chat PRIVATE TensorN CUDA::cudart CUDA::cublas)
+target_include_directories(astrai_chat PRIVATE src)
+
+source_group("src" FILES src/astrai_main.cpp src/kernels.cu src/fast_ops.cu src/dense_model.cpp)

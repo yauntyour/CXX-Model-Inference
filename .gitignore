@@ -3,3 +3,6 @@ build
 Qwen3.5-0.8B/*
 .vs
 out
+build-astrai
+*.bin
+repos

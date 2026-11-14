@@ -191,6 +191,36 @@ namespace qk
         rms_norm_1pw_kernel<2048><<<n, 256, 0, s>>>(x, w, y, n, d, eps);
     }
 
+    // 标准 Llama RMSNorm: y = x / rms(x) * w
+    template <int DMAX>
+    __global__ void rms_norm_kernel(const bf16* x, const bf16* w, bf16* y, int n, int d,
+                                    float eps)
+    {
+        int row = blockIdx.x;
+        const bf16* xr = x + (size_t)row * d;
+        bf16* yr = y + (size_t)row * d;
+        int tid = threadIdx.x;
+        __shared__ float ssum[DMAX / 8 + 1];
+        float v = 0.f;
+        for (int i = tid; i < d; i += blockDim.x)
+        {
+            float t = b2f(xr[i]);
+            v += t * t;
+        }
+        block_reduce(v, ssum, tid, blockDim.x);
+        float mean = __frsqrt_rn(v / (float)d + eps);
+        // 与 HF Llama 一致: 归一化结果先 round 到 bf16, 再与 bf16 权重相乘
+        for (int i = tid; i < d; i += blockDim.x)
+        {
+            float yv = b2f(f2b(b2f(xr[i]) * mean));
+            yr[i] = f2b(yv * b2f(w[i]));
+        }
+    }
+    void rms_norm(const bf16* x, const bf16* w, bf16* y, int n, int d, float eps, cudaStream_t s)
+    {
+        rms_norm_kernel<2048><<<n, 256, 0, s>>>(x, w, y, n, d, eps);
+    }
+
     __global__ void rms_norm_gated_kernel(const bf16* x, const bf16* w, const bf16* gate,
                                           bf16* y, int n, int d, float eps)
     {
@@ -259,11 +289,11 @@ namespace qk
                                         int n, int d)
     {
         int row = blockIdx.x;
-        int t = threadIdx.x;
         int id = ids[row];
         if (id < 0) return;
         const bf16* e = table + (size_t)id * d;
-        out[(size_t)row * d + t] = e[t];
+        bf16* o = out + (size_t)row * d;
+        for (int t = threadIdx.x; t < d; t += blockDim.x) o[t] = e[t];
     }
     void embed_gather(const bf16* table, const int* ids, bf16* out, int n, int d, cudaStream_t s)
     {
@@ -333,6 +363,48 @@ namespace qk
     {
         rope_text_kernel<<<n, 256, 0, s>>>(x, y, pos_t, pos_h, pos_w, inv_freq, section,
                                            n, H, D, rot_dim);
+    }
+
+    // ---------------- 标准 RoPE (Llama 半维 / GPT-J 交错) ----------------
+    // interleaved=0: 配对 (j, j+half); interleaved=1: 配对 (2j, 2j+1)
+    // 对每头前 rot_dim 维旋转, 其余维原样拷贝
+    __global__ void rope_neox_kernel(const bf16* x, bf16* y, const int* pos,
+                                     const float* inv_freq, int n, int H, int D,
+                                     int rot_dim, int interleaved)
+    {
+        int blk = blockIdx.x;              // token
+        int half = rot_dim / 2;
+        int total = H * half;
+        for (int i = threadIdx.x; i < total; i += blockDim.x)
+        {
+            int h = i / half;
+            int j = i % half;
+            float m = (float)pos[blk] * inv_freq[j];
+            float c = __cosf(m), s = __sinf(m);
+            const bf16* xr = x + ((size_t)blk * H + h) * D;
+            bf16* yr = y + ((size_t)blk * H + h) * D;
+            int i0 = interleaved ? 2 * j : j;
+            int i1 = interleaved ? 2 * j + 1 : j + half;
+            float a = b2f(xr[i0]);
+            float b = b2f(xr[i1]);
+            yr[i0] = f2b(a * c - b * s);
+            yr[i1] = f2b(a * s + b * c);
+        }
+        int total2 = H * (D - rot_dim);
+        for (int i = threadIdx.x; i < total2; i += blockDim.x)
+        {
+            int h = i / (D - rot_dim);
+            int d = rot_dim + i % (D - rot_dim);
+            const bf16* xr = x + ((size_t)blk * H + h) * D;
+            bf16* yr = y + ((size_t)blk * H + h) * D;
+            yr[d] = xr[d];
+        }
+    }
+    void rope_neox(const bf16* x, bf16* y, const int* pos, const float* inv_freq,
+                   int n, int H, int D, int rot_dim, int interleaved, cudaStream_t s)
+    {
+        rope_neox_kernel<<<n, 256, 0, s>>>(x, y, pos, inv_freq, n, H, D, rot_dim,
+                                           interleaved);
     }
 
     // ---------------- RoPE 视觉 (全维旋转) ----------------
@@ -572,9 +644,11 @@ namespace qk
                                  (size_t)D * sizeof(float));
             attr_set = true;
         }
+        // blockDim 至少 32, 保证 block_reduce 的 warp shuffle 掩码完整
+        int threads = D < 32 ? 32 : D;
         dim3 grid(nq, Hq);
-        attn_kernel<<<grid, D, (size_t)D * sizeof(float), s>>>(q, kc, vc, out, nq, len, Hq,
-                                                               Hkv, D, base, causal, scale);
+        attn_kernel<<<grid, threads, (size_t)D * sizeof(float), s>>>(q, kc, vc, out, nq, len, Hq,
+                                                                    Hkv, D, base, causal, scale);
     }
 
     // ---------------- 视觉注意力 (非因果, 分段) ----------------
@@ -630,8 +704,9 @@ namespace qk
                                  (size_t)D * sizeof(float));
             attr_set = true;
         }
+        int threads = D < 32 ? 32 : D;
         dim3 grid(seq, H);
-        attn_vision_kernel<<<grid, D, (size_t)D * sizeof(float), s>>>(
+        attn_vision_kernel<<<grid, threads, (size_t)D * sizeof(float), s>>>(
             q, k, v, out, seq, H, D, cu_seqlens, nseg, scale, stride);
     }
 
